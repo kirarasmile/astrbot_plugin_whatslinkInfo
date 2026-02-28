@@ -1,4 +1,4 @@
-name: astrbot_plugin_whatslinkInfo
+name: astrbot_plugin_whatslinkInfo_myself
 desc: 磁链解析插件，使用 whatslink.info API 生成资源预览并支持截图与合并转发
 version: v1.0.0
 author: ttlvip

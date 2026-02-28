@@ -1,0 +1,22 @@
+{
+  "timeout": {
+    "description": "API 请求超时时间 (毫秒)",
+    "type": "int",
+    "default": 10000
+  },
+  "useForward": {
+    "description": "是否使用合并转发 (仅支持 QQ/OneBot)",
+    "type": "bool",
+    "default": true
+  },
+  "showScreenshot": {
+    "description": "是否显示截图",
+    "type": "bool",
+    "default": true
+  },
+  "allowed_users": {
+    "description": "允许触发的 QQ 账号列表 (为空则允许所有用户触发)",
+    "type": "list",
+    "default": []
+  }
+}
