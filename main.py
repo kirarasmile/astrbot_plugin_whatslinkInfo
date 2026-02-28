@@ -17,7 +17,7 @@ import random
 import os
 import uuid
 from typing import List
-from PIL import Image as PILImage
+from PIL import Image as PILImage, ImageDraw, ImageEnhance
 
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.core.message.message_event_result import MessageEventResult
@@ -75,7 +75,7 @@ class WhatslinkPlugin(Star):
             return None
 
     async def _obfuscate_image(self, url: str, timeout_ms: int = 10000) -> str | None:
-        """下载图片并在内存中进行混淆降低风控概率，并存到本地临时文件返回路径"""
+        """下载图片并在内存中进行深度混淆（缩放、画盲水印线、加噪）降低风控概率"""
         timeout = aiohttp.ClientTimeout(total=timeout_ms / 1000 if timeout_ms else None)
         try:
             async with aiohttp.ClientSession(trust_env=True) as session:
@@ -88,33 +88,58 @@ class WhatslinkPlugin(Star):
             # 加载并处理图片
             with io.BytesIO(img_bytes) as in_buf:
                 with PILImage.open(in_buf) as img:
-                    img = img.convert("RGB")
-                    pixels = img.load()
+                    img = img.convert("RGBA")
                     width, height = img.size
                     
-                    # 随机修改四个角的像素值（微小改变肉眼不可见，足以改变MD5）
-                    corners = [(0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)]
-                    for x, y in corners:
-                        r, g, b = pixels[x, y]
-                        pixels[x, y] = (
-                            max(0, min(255, r + random.randint(-5, 5))),
-                            max(0, min(255, g + random.randint(-5, 5))),
-                            max(0, min(255, b + random.randint(-5, 5)))
-                        )
+                    # 1. 随机微调尺寸（缩放 98% ~ 102%）
+                    scale = random.uniform(0.98, 1.02)
+                    new_w, new_h = int(width * scale), int(height * scale)
+                    img = img.resize((new_w, new_h), PILImage.Resampling.LANCZOS)
                     
-                    # 保存图片到临时文件
+                    # 2. 绘制肉眼不可见的随机干扰线（盲水印抗风控）
+                    draw = ImageDraw.Draw(img)
+                    for _ in range(random.randint(5, 10)):
+                        x1 = random.randint(0, new_w)
+                        y1 = random.randint(0, new_h)
+                        x2 = random.randint(0, new_w)
+                        y2 = random.randint(0, new_h)
+                        # 随机极低透明度的颜色 (肉眼完全看不见，但破坏原图矩阵)
+                        r_color = (random.randint(0,255), random.randint(0,255), random.randint(0,255), random.randint(1, 3))
+                        draw.line((x1, y1, x2, y2), fill=r_color, width=random.randint(1, 3))
+                    
+                    # 3. 随机噪点覆盖几个点
+                    pixels = img.load()
+                    for _ in range(random.randint(20, 50)):
+                        x = random.randint(0, new_w - 1)
+                        y = random.randint(0, new_h - 1)
+                        if len(pixels[x, y]) == 4:
+                            r, g, b, a = pixels[x, y]
+                            pixels[x, y] = (
+                                max(0, min(255, r + random.randint(-15, 15))),
+                                max(0, min(255, g + random.randint(-15, 15))),
+                                max(0, min(255, b + random.randint(-15, 15))),
+                                a
+                            )
+                    
+                    # 转换回 RGB 以便保存 JPG
+                    img = img.convert("RGB")
+                    
+                    # 保存图片到临时文件，带有随机亮度微调和随机压缩率
+                    enhancer = ImageEnhance.Brightness(img)
+                    img = enhancer.enhance(random.uniform(0.95, 1.05))
+                    
                     tmp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_pics")
                     if not os.path.exists(tmp_dir):
                         os.makedirs(tmp_dir)
                     
-                    filename = f"{uuid.uuid4().hex}.jpg"
+                    filename = f"obs_{uuid.uuid4().hex}.jpg"
                     filepath = os.path.join(tmp_dir, filename)
                     
-                    img.save(filepath, format="JPEG", quality=random.randint(90, 95))
+                    img.save(filepath, format="JPEG", quality=random.randint(85, 95))
                     return filepath
                         
         except Exception as e:
-            logger.error(f"处理图片混淆出错: {e}")
+            logger.error(f"处理图片深度混淆出错: {e}")
             return None
 
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -177,9 +202,22 @@ class WhatslinkPlugin(Star):
             count = api_ret.get("count")
             file_type = api_ret.get("file_type", api_ret.get("type", ""))
             screenshots = api_ret.get("screenshots", []) or []
+            files_list = api_ret.get("files", []) or []
 
-            # 构建要显示的文本：要求不展示类型和来源，仅显示名称、文件数量与总大小
-            header = f"名称: {name}\n文件数量: {count}\n总大小: {size} ({_human_readable_size(size)})\n"
+            # 构建要显示的文本
+            header = f"【名称】: {name}\n【数量】: {count} 个\n【大小】: {size} ({_human_readable_size(size)})\n"
+            
+            # 美化展示：列出内部包含的具体文件清单（最多显示前 10 个）
+            if files_list:
+                header += "\n📄 包含文件列表:\n"
+                show_limit = 10
+                for idx, f in enumerate(files_list[:show_limit], 1):
+                    f_name = f.get("name", "未知")
+                    f_size = f.get("size", 0)
+                    header += f"  {idx}. {f_name} ({_human_readable_size(f_size)})\n"
+                
+                if len(files_list) > show_limit:
+                    header += f"  ... 以及其他 {len(files_list) - show_limit} 个文件。\n"
 
             # 如果需要显示截图，准备所有截图的本地临时文件路径（防风控混淆处理）
             shots: List[str] = []
@@ -228,12 +266,15 @@ class WhatslinkPlugin(Star):
                         # 把 Nodes 里所有的图文组件提取出来作为普通消息链
                         for _node in r.chain[0].nodes:
                             for _comp in getattr(_node, 'content', []):
-                                fallback_mer.chain.append(_comp)
+                                # 极限降级：如果连普通图文都发不出（Timeout / 1200），说明风控极其严格（甚至屏蔽了混淆图）
+                                # 此时在降级消息中剔除所有图片，只保留纯文本，以确保资源必须送达
+                                if isinstance(_comp, Plain):
+                                    fallback_mer.chain.append(_comp)
                         
                         await self.context.send_message(event.unified_msg_origin, fallback_mer)
-                        logger.info("降级为普通图文消息发送成功！")
+                        logger.info("极简降级（仅文本）发送成功！")
                     except Exception as fallback_e:
-                        logger.error(f"降级发送普通消息也失败了: {fallback_e}")
+                        logger.error(f"极简降级发送也失败了: {fallback_e}")
         
         # 发送完毕后，清理刚才生成的临时图片文件，防止硬盘被占满
         for path in shots:
