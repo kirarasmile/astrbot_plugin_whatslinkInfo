@@ -130,8 +130,8 @@ class WhatslinkPlugin(Star):
         if not text:
             return
 
-        # 必须包含触发词“验车”才去解析，否则原样忽略
-        if "验车" not in text:
+        # 必须包含触发词“我要验牌 ”才去解析，否则原样忽略
+        if "我要验牌 " not in text:
             return
 
         magnets = MAGNET_RE.findall(text)
